@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+  name: bsee-web-server
+  namespace: burp
+spec:
+  ingressClassName: public
+  rules:
+  - host: bsee-web-server.test
+    http:
+      paths:
+      - backend:
+          service:
+            name: bsee-web-server
+            port:
+              number: 8443
+        path: /
+        pathType: Prefix
