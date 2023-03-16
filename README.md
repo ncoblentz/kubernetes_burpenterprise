@@ -3,8 +3,10 @@
     - [Cluster Setup](#cluster-setup)
       - [Install Microk8s](#install-microk8s)
       - [Setup NFS](#setup-nfs)
-      - [Setup Database](#setup-database)
+      - [Create the Kubernetes Namespace](#create-the-kubernetes-namespace)
+      - [Setup the Database](#setup-the-database)
       - [Setup Burp Enterprise](#setup-burp-enterprise)
+    - [Use Traefik For Ingress](#use-traefik-for-ingress)
 
 
 # Local Microk8s Burp Enterprise Kubernetes PoC 
@@ -53,8 +55,15 @@ $ microk8s kubectl apply -f sc-nfs.yaml
 $ microk8s kubectl get storageclasses.storage.k8s.io
 ```
 
-#### Setup Database
+#### Create the Kubernetes Namespace
 
+[burp-namespace.yaml](burp-namespace.yaml)
+
+```bash
+$ microk8s kubectl create -f burp-namespace.yaml
+```
+
+#### Setup the Database
 
 [postgres-pvc.yaml](postgres-pvc.yaml)
 
@@ -86,11 +95,6 @@ $ microk8s kubectl -n burp create -f postgres-service.yaml
 ```
 
 #### Setup Burp Enterprise
-[burp-namespace.yaml](burp-namespace.yaml)
-
-```bash
-$ microk8s kubectl create -f burp-namespace.yaml
-```
 
 [burp-pvc.yaml](burp-pvc.yaml)
 
@@ -119,12 +123,75 @@ $ microk8s kubectl -n burp create -f burp-ingress.yaml
 $ echo "10.0.0.15 bsee-web-server.test" | sudo tee -a /etc/hosts
 ```
 
+~~Create Certificate:~~
+
+```bash
+$ #mkdir cert
+$ #cd cert/
+$ #openssl genrsa -out "root-ca.key" 4096
+$ #openssl req -new -key "root-ca.key" -out "root-ca.csr" -sha256 -subj '/CN=Local Test Root CA'
+$ #nano -l root-ca.cnf
+$ #openssl x509 -req -days 3650 -in "root-ca.csr" -signkey "root-ca.key" -sha256 -out "root-ca.crt" -extfile "root-ca.cnf" -extensions root_ca
+#Certificate request self-signature ok
+#subject=CN = Local Test Root CA
+$ #openssl genrsa -out "server.key" 4096
+$ #openssl req -new -key "server.key" -out "server.csr" -sha256 -subj '/CN=*.test'
+$ #nano -l server.cnf
+$ #openssl x509 -req -days 750 -in "server.csr" -sha256 -CA "root-ca.crt" -CAkey "root-ca.key" -CAcreateserial -out "server.crt" -extfile "server.cnf" -extensions server
+#Certificate request self-signature ok
+#subject=CN = *.test
+$ #openssl pkcs12 -export -out certificate.pfx -inkey  -in certificate.crt -certfile more.crt
+#root-ca.cnf  root-ca.crt  root-ca.csr  root-ca.key  server.cnf   server.crt   server.csr   server.key   
+$ #openssl pkcs12 -export -out server.pfx -inkey server.key -in server.crt 
+#Enter Export Password:
+#Verifying - Enter Export Password:
+$ #openssl pkcs12 -export -out server.p12 -inkey server.key -in server.crt 
+$ #microk8s kubectl -n burp create secret generic myca --from-file=cert/root-ca.crt
+```
+
 Visit https://bsee-web-server.test:
- - For the Database config enter:
-    - JDBC URL: `jdbc:postgresql://postgres.burp.svc.cluster.local:5432/burp_enterprise`
-    - Enterprise Server:
-      - Username: `burp_enterprise`
-      - Password: `changeme`
-    - Enterprise Scanning Resources:
-      - Username: `burp_agent`
-      - Password: `changeme`
+- ~~For the certificate, upload `server.p12` with the password you chose~~
+- For the Database config enter:
+  - JDBC URL: `jdbc:postgresql://postgres.burp.svc.cluster.local:5432/burp_enterprise`
+  - Enterprise Server:
+    - Username: `burp_enterprise`
+    - Password: `changeme`
+  - Enterprise Scanning Resources:
+    - Username: `burp_agent`
+    - Password: `changeme`
+
+### Use Traefik For Ingress
+
+```bash
+$ #microk8s disable ingress
+$ #microk8s helm repo add traefik https://traefik.github.io/charts
+$ #microk8s helm repo update
+$ #microk8s helm show values traefik/traefik > traefikvalues.yaml
+$ #nano -l traefikvalues.yaml
+$ #microk8s helm install -n traefik traefik traefik/traefik
+$ microk8s enable traefik
+$ microk8s kubectl -n traefik port-forward $(microk8s kubectl -n traefik get pods --selector "app.kubernetes.io/name=traefik" --output=name) 9000:9000
+Forwarding from 127.0.0.1:9000 -> 9000
+Forwarding from [::1]:9000 -> 9000
+# Then visit http://localhost:9000/dashboard/#/
+$ echo "10.0.0.15 traefik-ingressroute.bsee-web-server.test" | sudo tee -a /etc/hosts
+$ microk8s kubectl -n traefik get services traefik -o jsonpath="{'web interface node port: '}{.spec.ports[?(@.name=='web')].nodePort}{'\n'}{'websecure interface node port: '}{.spec.ports[?(@.name=='websecure')].nodePort}{'\n'}"
+web interface node port: 31750
+websecure interface node port: 31405
+```
+
+[mytransport.yaml](mytransport.yaml)
+
+Traefik won't connect to service/pod with an untrusted TLS certificate. The Burp Enterprise Web Server uses TLS by default with a self signed (or uploaded) certificate. The `mytransport.yaml` file disables certificate validation between Traefik and the Pod, but not between the user's browser and Traefik.
+
+```bash
+$ microk8s kubectl -n burp create -f mytransport.yaml
+```
+
+[burp-ingressroute.yaml](burp-ingressroute.yaml)
+
+```bash
+$ microk8s kubectl -n burp create -f burp-ingressroute.yaml 
+```
+
+Visit https://traefik-ingressroute.bsee-web-server.test:31405/

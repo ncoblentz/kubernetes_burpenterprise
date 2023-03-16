@@ -1,0 +1,9 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: ServersTransport
+metadata:
+  name: mytransport
+  namespace: burp
+spec:
+  insecureSkipVerify: true
+#  rootCAsSecrets:
+#  - myca

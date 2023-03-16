@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    #traefik.ingress.kubernetes.io/service.serversscheme: https
+    #traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/service.serverstransport: mytransport
+  name: bsee-web-server-traefik
+  namespace: burp
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: traefik-ingress.bsee-web-server.test
+    http:
+      paths:
+      - backend:
+          service:
+            name: bsee-web-server
+            port:
+              number: 8443
+        path: /
+        pathType: Prefix
