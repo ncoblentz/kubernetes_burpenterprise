@@ -169,15 +169,18 @@ $ #microk8s helm repo update
 $ #microk8s helm show values traefik/traefik > traefikvalues.yaml
 $ #nano -l traefikvalues.yaml
 $ #microk8s helm install -n traefik traefik traefik/traefik
-$ microk8s enable traefik
+$ microk8s enable traefik metallb:192.168.2.0/24
 $ microk8s kubectl -n traefik port-forward $(microk8s kubectl -n traefik get pods --selector "app.kubernetes.io/name=traefik" --output=name) 9000:9000
 Forwarding from 127.0.0.1:9000 -> 9000
 Forwarding from [::1]:9000 -> 9000
 # Then visit http://localhost:9000/dashboard/#/
-$ echo "10.0.0.15 traefik-ingressroute.bsee-web-server.test" | sudo tee -a /etc/hosts
-$ microk8s kubectl -n traefik get services traefik -o jsonpath="{'web interface node port: '}{.spec.ports[?(@.name=='web')].nodePort}{'\n'}{'websecure interface node port: '}{.spec.ports[?(@.name=='websecure')].nodePort}{'\n'}"
-web interface node port: 31750
-websecure interface node port: 31405
+$ microk8s kubectl -n traefik get services traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}{"\n"}' # get the IP of the loadbalancer through metallb
+192.168.2.0
+$ echo "192.168.2.0 traefik-ingressroute.bsee-web-server.test" | sudo tee -a /etc/hosts
+$ #echo "10.0.0.15 traefik-ingressroute.bsee-web-server.test" | sudo tee -a /etc/hosts
+$ #microk8s kubectl -n traefik get services traefik -o jsonpath="{'web interface node port: '}{.spec.ports[?(@.name=='web')].nodePort}{'\n'}{'websecure interface node port: '}{.spec.ports[?(@.name=='websecure')].nodePort}{'\n'}"
+#web interface node port: 31750
+#websecure interface node port: 31405
 ```
 
 [mytransport.yaml](mytransport.yaml)
@@ -194,4 +197,4 @@ $ microk8s kubectl -n burp create -f mytransport.yaml
 $ microk8s kubectl -n burp create -f burp-ingressroute.yaml 
 ```
 
-Visit https://traefik-ingressroute.bsee-web-server.test:31405/
+Visit https://traefik-ingressroute.bsee-web-server.test/

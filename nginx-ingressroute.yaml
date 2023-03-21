@@ -1,0 +1,21 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nginx-ingressroute
+  namespace: burp
+spec:
+  entryPoints:
+  - web
+  routes:
+  - kind: Rule
+    match: Host(`traefikroute.nginx.test`)
+    priority: 10
+    services:
+    - kind: Service
+      name: nginx
+      namespace: burp
+      passHostHeader: true
+      port: 80
+      responseForwarding:
+        flushInterval: 1ms
+      scheme: http
