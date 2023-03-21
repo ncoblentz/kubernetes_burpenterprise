@@ -7,6 +7,7 @@
       - [Setup the Database](#setup-the-database)
       - [Setup Burp Enterprise](#setup-burp-enterprise)
     - [Use Traefik For Ingress](#use-traefik-for-ingress)
+    - [Enable Certificate Manager](#enable-certificate-manager)
 
 
 # Local Microk8s Burp Enterprise Kubernetes PoC 
@@ -123,32 +124,6 @@ $ microk8s kubectl -n burp create -f burp-ingress.yaml
 $ echo "10.0.0.15 bsee-web-server.test" | sudo tee -a /etc/hosts
 ```
 
-~~Create Certificate:~~
-
-```bash
-$ #mkdir cert
-$ #cd cert/
-$ #openssl genrsa -out "root-ca.key" 4096
-$ #openssl req -new -key "root-ca.key" -out "root-ca.csr" -sha256 -subj '/CN=Local Test Root CA'
-$ #nano -l root-ca.cnf
-$ #openssl x509 -req -days 3650 -in "root-ca.csr" -signkey "root-ca.key" -sha256 -out "root-ca.crt" -extfile "root-ca.cnf" -extensions root_ca
-#Certificate request self-signature ok
-#subject=CN = Local Test Root CA
-$ #openssl genrsa -out "server.key" 4096
-$ #openssl req -new -key "server.key" -out "server.csr" -sha256 -subj '/CN=*.test'
-$ #nano -l server.cnf
-$ #openssl x509 -req -days 750 -in "server.csr" -sha256 -CA "root-ca.crt" -CAkey "root-ca.key" -CAcreateserial -out "server.crt" -extfile "server.cnf" -extensions server
-#Certificate request self-signature ok
-#subject=CN = *.test
-$ #openssl pkcs12 -export -out certificate.pfx -inkey  -in certificate.crt -certfile more.crt
-#root-ca.cnf  root-ca.crt  root-ca.csr  root-ca.key  server.cnf   server.crt   server.csr   server.key   
-$ #openssl pkcs12 -export -out server.pfx -inkey server.key -in server.crt 
-#Enter Export Password:
-#Verifying - Enter Export Password:
-$ #openssl pkcs12 -export -out server.p12 -inkey server.key -in server.crt 
-$ #microk8s kubectl -n burp create secret generic myca --from-file=cert/root-ca.crt
-```
-
 Visit https://bsee-web-server.test:
 - ~~For the certificate, upload `server.p12` with the password you chose~~
 - For the Database config enter:
@@ -199,3 +174,324 @@ $ microk8s kubectl -n burp create -f burp-ingressroute.yaml
 ```
 
 Visit https://traefik-ingressroute.bsee-web-server.test/
+
+### Enable Certificate Manager
+
+In this example, I am using a CA certificate I generated in order to demonstrate cert-manager's ability to automatically generate server certificates and keep then up-to-date. This matches the environment I was deploying in, in which the server was internally deployed using an internal trusted CA.
+
+__Create a CA Certificate__
+
+```bash
+$ mkdir cert
+$ cd cert/
+$ openssl genrsa -out "root-ca.key" 4096
+$ openssl req -new -key "root-ca.key" -out "root-ca.csr" -sha256 -subj '/CN=Local Test Root CA'
+$ nano -l root-ca.cnf
+$ openssl x509 -req -days 3650 -in "root-ca.csr" -signkey "root-ca.key" -sha256 -out "root-ca.crt" -extfile "root-ca.cnf" -extensions root_ca
+Certificate request self-signature ok
+subject=CN = Local Test Root CA
+$ #openssl genrsa -out "server.key" 4096
+$ #openssl req -new -key "server.key" -out "server.csr" -sha256 -subj '/CN=*.test'
+$ #nano -l server.cnf
+$ #openssl x509 -req -days 750 -in "server.csr" -sha256 -CA "root-ca.crt" -CAkey "root-ca.key" -CAcreateserial -out "server.crt" -extfile "server.cnf" -extensions server
+#Certificate request self-signature ok
+#subject=CN = *.test
+$ #openssl pkcs12 -export -out certificate.pfx -inkey  -in certificate.crt -certfile more.crt
+#root-ca.cnf  root-ca.crt  root-ca.csr  root-ca.key  server.cnf   server.crt   server.csr   server.key   
+$ #openssl pkcs12 -export -out server.pfx -inkey server.key -in server.crt 
+#Enter Export Password:
+#Verifying - Enter Export Password:
+$ #openssl pkcs12 -export -out server.p12 -inkey server.key -in server.crt 
+$ #microk8s kubectl -n burp create secret generic myca --from-file=cert/root-ca.crt
+```
+
+__Enable Cert-Manager__
+
+```bash
+$ microk8s enable cert-manager
+```
+
+__Add the CA to the Cluster__
+
+```bash
+$ microk8s kubectl -n burp create secret tls ca-pair --cert=cert/root-ca.crt --key=cert/root-ca.key 
+secret/ca-pair created
+```
+
+[issuer.yaml](issuer.yaml)
+```bash
+$ microk8s kubectl -n burp create -f issuer.yaml
+```
+
+__Option 1: Apply the Certificate to Nginx Ingress__
+
+[burp-ingress-cert-manager.yaml](burp-ingress-cert-manager.yaml)
+```bash
+$ microk8s kubectl replace -f burp-ingress-cert-manager.yaml 
+ingress.networking.k8s.io/bsee-web-server replaced
+microk8s kubectl -n burp describe ingress bsee-web-server
+Name:             bsee-web-server
+Labels:           <none>
+Namespace:        burp
+Address:          127.0.0.1
+Ingress Class:    public
+Default backend:  <default>
+TLS:
+  bsee-web-certificate-ingress terminates bsee-web-server.test
+Rules:
+  Host                  Path  Backends
+  ----                  ----  --------
+  bsee-web-server.test  
+                        /   bsee-web-server:8443 (10.1.215.154:8443)
+Annotations:            cert-manager.io/cluster-issuer: issuer
+                        nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+Events:
+  Type    Reason             Age               From                       Message
+  ----    ------             ----              ----                       -------
+  Normal  Sync               95s (x3 over 5d)  nginx-ingress-controller   Scheduled for sync
+  Normal  CreateCertificate  95s               cert-manager-ingress-shim  Successfully created Certificate "bsee-web-certificate-ingress"
+  Normal  Sync               95s (x3 over 5d)  nginx-ingress-controller   Scheduled for sync
+$ microk8s kubectl -n burp describe certificate bsee-web-certificate-ingress 
+Name:         bsee-web-certificate-ingress
+Namespace:    burp
+Labels:       <none>
+Annotations:  <none>
+API Version:  cert-manager.io/v1
+Kind:         Certificate
+Metadata:
+  Creation Timestamp:  2023-03-21T15:21:14Z
+  Generation:          1
+  Managed Fields:
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:status:
+        f:nextPrivateKeySecretName:
+    Manager:      cert-manager-certificates-key-manager
+    Operation:    Update
+    Subresource:  status
+    Time:         2023-03-21T15:21:14Z
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:status:
+        .:
+        f:conditions:
+          .:
+          k:{"type":"Ready"}:
+            .:
+            f:lastTransitionTime:
+            f:message:
+            f:observedGeneration:
+            f:reason:
+            f:status:
+            f:type:
+    Manager:      cert-manager-certificates-readiness
+    Operation:    Update
+    Subresource:  status
+    Time:         2023-03-21T15:21:14Z
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:status:
+        f:conditions:
+          k:{"type":"Issuing"}:
+            .:
+            f:lastTransitionTime:
+            f:message:
+            f:observedGeneration:
+            f:reason:
+            f:status:
+            f:type:
+    Manager:      cert-manager-certificates-trigger
+    Operation:    Update
+    Subresource:  status
+    Time:         2023-03-21T15:21:14Z
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:ownerReferences:
+          .:
+          k:{"uid":"c341f396-83da-418c-8ecc-18fa6b81d928"}:
+      f:spec:
+        .:
+        f:dnsNames:
+        f:issuerRef:
+          .:
+          f:group:
+          f:kind:
+          f:name:
+        f:secretName:
+        f:usages:
+    Manager:    cert-manager-ingress-shim
+    Operation:  Update
+    Time:       2023-03-21T15:21:14Z
+  Owner References:
+    API Version:           networking.k8s.io/v1
+    Block Owner Deletion:  true
+    Controller:            true
+    Kind:                  Ingress
+    Name:                  bsee-web-server
+    UID:                   c341f396-83da-418c-8ecc-18fa6b81d928
+  Resource Version:        1400223
+  UID:                     414670fa-860c-4a75-87d8-d7e5147da9a7
+Spec:
+  Dns Names:
+    bsee-web-server.test
+  Issuer Ref:
+    Group:      cert-manager.io
+    Kind:       ClusterIssuer
+    Name:       issuer
+  Secret Name:  bsee-web-certificate-ingress
+  Usages:
+    digital signature
+    key encipherment
+Status:
+  Conditions:
+    Last Transition Time:        2023-03-21T15:21:14Z
+    Message:                     Issuing certificate as Secret does not exist
+    Observed Generation:         1
+    Reason:                      DoesNotExist
+    Status:                      False
+    Type:                        Ready
+    Last Transition Time:        2023-03-21T15:21:14Z
+    Message:                     Issuing certificate as Secret does not exist
+    Observed Generation:         1
+    Reason:                      DoesNotExist
+    Status:                      True
+    Type:                        Issuing
+  Next Private Key Secret Name:  bsee-web-certificate-ingress-h7svq
+Events:
+  Type    Reason     Age    From                                       Message
+  ----    ------     ----   ----                                       -------
+  Normal  Issuing    2m25s  cert-manager-certificates-trigger          Issuing certificate as Secret does not exist
+  Normal  Generated  2m25s  cert-manager-certificates-key-manager      Stored new private key in temporary Secret resource "bsee-web-certificate-ingress-h7svq"
+  Normal  Requested  2m25s  cert-manager-certificates-request-manager  Created new CertificateRequest resource "bsee-web-certificate-ingress-lrw8c"
+```
+
+![](2023-03-21-10-27-04.png)
+
+__Option 2: Apply the Certificate to Traefik Ingress Route__
+
+This information was a little difficult for me to find as someone brand-new. This article was really helpful: https://blog.tabbo.it/traefik-secure-ingressroutes/
+
+[burp-certificate.yaml](burp-certificate.yaml)
+```bash
+$ microk8s kubectl -n burp create -f burp-certificate.yaml 
+certificate.cert-manager.io/bsee-web-certificate created
+$ microk8s kubectl -n burp describe secrets bsee-web-certificate #it generated a server certificate for us
+Name:         bsee-web-certificate
+Namespace:    burp
+Labels:       <none>
+Annotations:  cert-manager.io/alt-names: traefik-ingressroute.bsee-web-server.test,bsee-web-server.test
+              cert-manager.io/certificate-name: bsee-web-certificate
+              cert-manager.io/common-name: 
+              cert-manager.io/ip-sans: 
+              cert-manager.io/issuer-group: 
+              cert-manager.io/issuer-kind: Issuer
+              cert-manager.io/issuer-name: issuer
+              cert-manager.io/uri-sans: 
+
+Type:  kubernetes.io/tls
+
+Data
+====
+ca.crt:   1814 bytes
+tls.crt:  1525 bytes
+tls.key:  1675 bytes
+$ microk8s kubectl -n burp describe certificate bsee-web-certificate 
+Name:         bsee-web-certificate
+Namespace:    burp
+Labels:       <none>
+Annotations:  <none>
+API Version:  cert-manager.io/v1
+Kind:         Certificate
+Metadata:
+  Creation Timestamp:  2023-03-21T14:52:46Z
+  Generation:          1
+  Managed Fields:
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:spec:
+        .:
+        f:dnsNames:
+        f:issuerRef:
+          .:
+          f:kind:
+          f:name:
+        f:secretName:
+    Manager:      kubectl-create
+    Operation:    Update
+    Time:         2023-03-21T14:52:46Z
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:status:
+        f:revision:
+    Manager:      cert-manager-certificates-issuing
+    Operation:    Update
+    Subresource:  status
+    Time:         2023-03-21T14:52:47Z
+    API Version:  cert-manager.io/v1
+    Fields Type:  FieldsV1
+    fieldsV1:
+      f:status:
+        .:
+        f:conditions:
+          .:
+          k:{"type":"Ready"}:
+            .:
+            f:lastTransitionTime:
+            f:message:
+            f:observedGeneration:
+            f:reason:
+            f:status:
+            f:type:
+        f:notAfter:
+        f:notBefore:
+        f:renewalTime:
+    Manager:         cert-manager-certificates-readiness
+    Operation:       Update
+    Subresource:     status
+    Time:            2023-03-21T14:52:47Z
+  Resource Version:  1397029
+  UID:               f5a0ca04-0963-4e80-b690-50bb3f8140b4
+Spec:
+  Dns Names:
+    traefik-ingressroute.bsee-web-server.test
+    bsee-web-server.test
+  Issuer Ref:
+    Kind:       Issuer
+    Name:       issuer
+  Secret Name:  bsee-web-certificate
+Status:
+  Conditions:
+    Last Transition Time:  2023-03-21T14:52:47Z
+    Message:               Certificate is up to date and has not expired
+    Observed Generation:   1
+    Reason:                Ready
+    Status:                True
+    Type:                  Ready
+  Not After:               2023-06-19T14:52:47Z
+  Not Before:              2023-03-21T14:52:47Z
+  Renewal Time:            2023-05-20T14:52:47Z
+  Revision:                1
+Events:
+  Type    Reason     Age   From                                       Message
+  ----    ------     ----  ----                                       -------
+  Normal  Issuing    116s  cert-manager-certificates-trigger          Issuing certificate as Secret does not exist
+  Normal  Generated  115s  cert-manager-certificates-key-manager      Stored new private key in temporary Secret resource "bsee-web-certificate-d7t9w"
+  Normal  Requested  115s  cert-manager-certificates-request-manager  Created new CertificateRequest resource "bsee-web-certificate-7vqqf"
+  Normal  Issuing    115s  cert-manager-certificates-issuing          The certificate has been successfully issued
+```
+
+[burp-ingressroute-cert-manager.yaml ](burp-ingressroute-cert-manager.yaml )
+
+```bash
+$ microk8s kubectl replace -f burp-ingressroute-cert-manager.yaml 
+ingressroute.traefik.containo.us/burp-ingressroute replaced
+```
+
+![](2023-03-21-10-04-24.png)

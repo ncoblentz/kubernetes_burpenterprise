@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bsee-web-certificate
+  namespace: burp
+spec:
+  dnsNames:
+    - traefik-ingressroute.bsee-web-server.test
+    - bsee-web-server.test
+  secretName: bsee-web-certificate
+  issuerRef:
+    name: issuer
+    kind: Issuer

@@ -1,0 +1,21 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: burp-ingressroute
+  namespace: burp
+spec:
+  entryPoints:
+  - websecure
+  routes:
+  - kind: Rule
+    match: Host(`traefik-ingressroute.bsee-web-server.test`)
+    services:
+    - kind: Service
+      name: bsee-web-server
+      namespace: burp
+      passHostHeader: true
+      port: 8443
+      scheme: https
+      serversTransport: mytransport
+  tls:
+    secretName: bsee-web-certificate
