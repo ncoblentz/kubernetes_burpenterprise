@@ -169,6 +169,7 @@ $ #microk8s helm repo update
 $ #microk8s helm show values traefik/traefik > traefikvalues.yaml
 $ #nano -l traefikvalues.yaml
 $ #microk8s helm install -n traefik traefik traefik/traefik
+$ microk8s enable community
 $ microk8s enable traefik metallb:192.168.2.0/24
 $ microk8s kubectl -n traefik port-forward $(microk8s kubectl -n traefik get pods --selector "app.kubernetes.io/name=traefik" --output=name) 9000:9000
 Forwarding from 127.0.0.1:9000 -> 9000
