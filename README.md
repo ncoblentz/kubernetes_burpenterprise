@@ -10,7 +10,6 @@
     - [Enable Certificate Manager](#enable-certificate-manager)
   - [CI/CD](#cicd)
     - [GitLab](#gitlab)
-      - [Address a problem with cert-manager](#address-a-problem-with-cert-manager)
       - [Install](#install-1)
       - [Create a Test Pipeline to Confirm Connectivity/Certificates/Trust](#create-a-test-pipeline-to-confirm-connectivitycertificatestrust)
 
@@ -504,30 +503,6 @@ ingressroute.traefik.containo.us/burp-ingressroute replaced
 ## CI/CD
 
 ### GitLab
-
-#### Address a problem with cert-manager
-
-```bash
-$ microk8s disable cert-manager
-$ microk8s helm repo add jetstack https://charts.jetstack.io
-"jetstack" has been added to your repositories
-$ microk8s helm repo update
-Hang tight while we grab the latest from your chart repositories...
-...Successfully got an update from the "csi-driver-nfs" chart repository
-...Successfully got an update from the "jetstack" chart repository
-...Successfully got an update from the "traefik" chart repository
-...Successfully got an update from the "gitlab" chart repository
-Update Complete. ⎈Happy Helming!⎈
-$ #microk8s helm install -n cert-manager --create-namespace cert-manager jetstack/cert-manager --set installCRDs=true
-#NAME: cert-manager
-#LAST DEPLOYED: Tue Mar 21 12:33:49 2023
-#NAMESPACE: cert-manager
-#STATUS: deployed
-#REVISION: 1
-#TEST SUITE: None
-#NOTES:
-#cert-manager v1.11.0 has been deployed successfully!
-```
 
 #### Install
 
