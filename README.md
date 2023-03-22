@@ -8,6 +8,11 @@
       - [Setup Burp Enterprise](#setup-burp-enterprise)
     - [Use Traefik For Ingress](#use-traefik-for-ingress)
     - [Enable Certificate Manager](#enable-certificate-manager)
+  - [CI/CD](#cicd)
+    - [GitLab](#gitlab)
+      - [Address a problem with cert-manager](#address-a-problem-with-cert-manager)
+      - [Install](#install-1)
+      - [Create Pipeline](#create-pipeline)
 
 
 # Local Microk8s Burp Enterprise Kubernetes PoC 
@@ -243,7 +248,7 @@ Rules:
   ----                  ----  --------
   bsee-web-server.test  
                         /   bsee-web-server:8443 (10.1.215.154:8443)
-Annotations:            cert-manager.io/cluster-issuer: issuer
+Annotations:            cert-manager.io/issuer: issuer
                         nginx.ingress.kubernetes.io/backend-protocol: HTTPS
 Events:
   Type    Reason             Age               From                       Message
@@ -495,3 +500,223 @@ ingressroute.traefik.containo.us/burp-ingressroute replaced
 ```
 
 ![](2023-03-21-10-04-24.png)
+
+## CI/CD
+
+### GitLab
+
+#### Address a problem with cert-manager
+
+```bash
+$ microk8s disable cert-manager
+$ microk8s helm repo add jetstack https://charts.jetstack.io
+"jetstack" has been added to your repositories
+$ microk8s helm repo update
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "csi-driver-nfs" chart repository
+...Successfully got an update from the "jetstack" chart repository
+...Successfully got an update from the "traefik" chart repository
+...Successfully got an update from the "gitlab" chart repository
+Update Complete. ⎈Happy Helming!⎈
+$ #microk8s helm install -n cert-manager --create-namespace cert-manager jetstack/cert-manager --set installCRDs=true
+#NAME: cert-manager
+#LAST DEPLOYED: Tue Mar 21 12:33:49 2023
+#NAMESPACE: cert-manager
+#STATUS: deployed
+#REVISION: 1
+#TEST SUITE: None
+#NOTES:
+#cert-manager v1.11.0 has been deployed successfully!
+```
+
+#### Install
+
+Selected instructions from: https://docs.gitlab.com/charts/installation/deployment.html
+
+This is a minimal-effort install and is very far from being production-quality. This repo focuses on Burp Enterprise, not GitLab. Therefore, these instructions install GitLab just well enough to work on CI/CD with Burp Enterprise.
+
+```bash
+data-gitlab-postgresql-0
+
+
+$ microk8s helm repo add gitlab https://charts.gitlab.io/
+$ microk8s helm repo update
+$ $ microk8s helm install -n gitlab gitlab gitlab/gitlab --create-namespace --timeout 600s --set global.hosts.domain=test --set postgresql.image.tag=13.6.0 --set global.hosts.externalIP=192.168.2.1 --set certmanager.install=false --set prometheus.install=false --set global.ingress.configureCertmanager=false
+$ sudo chmod 777 -R /srv/nfs/ && sudo chown -R :microk8s /srv/nfs # I shouldn't have to do this, but I haven't quite figured out the NFS configuration
+$ microk8s kubectl -n gitlab patch deployments gitlab-gitlab-runner -p '{"spec":{"template":{"spec":{"hostAliases":[{"ip":"192.168.2.1","hostnames":["gitlab.test"]}]}}}}'
+$ openssl s_client -showcerts -connect gitlab.test:443 -servername gitlab.test < /dev/null 2>/dev/null | openssl x509 -outform PEM > gitlab.test.crt
+$ microk8s kubectl -n gitlab create secret generic gitlab-test-cert --from-file=gitlab.test.crt 
+$ microk8s kubectl -n gitlab2 edit deployments.apps gitlab-gitlab-runner 
+# Add:
+volumes:
+- name: gitlab-test-cert
+  secret:
+    secretName: gitlab-test-cert
+#And
+volumeMounts:
+- name: gitlab-test-cert
+  mountPath: /home/gitlab-runner/certs
+$ microk8s kubectl -n gitlab2 edit configmaps gitlab-gitlab-runner 
+#in config.template.toml, Add:   [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n similar to:
+[[runners]]\n  [runners.kubernetes]\n  image = \"ubuntu:18.04\"\n\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n\n  [runners.cache]\n    Type = \"s3\"\n    Path = \"gitlab-runner\"\n    Shared = true\n    [runners.cache.s3]\n      ServerAddress = \"minio.test\"\n      BucketName = \"runner-cache\"\n      BucketLocation = \"us-east-1\"\n      Insecure = false      
+ 
+$ #These were initially needed because I didn't make nfs-csi storageclass the default storageclass
+$ #microk8s kubectl -n gitlab patch pvc data-gitlab-postgresql-0 -p '{"spec":{"storageClassName":"nfs-csi"}}'
+$ #microk8s kubectl -n gitlab patch pvc repo-data-gitlab-gitaly-0 -p '{"spec":{"storageClassName":"nfs-csi"}}'
+$ #microk8s kubectl -n gitlab patch pvc redis-data-gitlab-redis-master-0 -p '{"spec":{"storageClassName":"nfs-csi"}}'
+$ #This could take a while, here are the commands I used to watch its progress and check on things
+$ microk8s kubectl -n gitlab get all,pvc,certificates,secrets
+NAME                                                  READY   STATUS      RESTARTS      AGE
+pod/gitlab-toolbox-844bbbc454-tsggx                   1/1     Running     0             71m
+pod/gitlab-minio-67f5c7dfd8-fhhn9                     1/1     Running     0             71m
+pod/gitlab-gitlab-exporter-86f6585df6-4lk99           1/1     Running     0             71m
+pod/gitlab-nginx-ingress-controller-989bd4584-6wk8x   1/1     Running     0             71m
+pod/gitlab-registry-5888c7c755-hq58q                  1/1     Running     0             71m
+pod/gitlab-gitlab-shell-6f67cc5b5c-l2bwx              1/1     Running     0             71m
+pod/gitlab-minio-create-buckets-1-nrxrc               0/1     Completed   0             71m
+pod/gitlab-nginx-ingress-controller-989bd4584-jfgqj   1/1     Running     0             71m
+pod/gitlab-registry-5888c7c755-r5nzs                  1/1     Running     0             70m
+pod/gitlab-gitaly-0                                   1/1     Running     0             71m
+pod/gitlab-gitlab-shell-6f67cc5b5c-drmr8              1/1     Running     0             70m
+pod/gitlab-redis-master-0                             2/2     Running     5 (69m ago)   71m
+pod/gitlab-kas-986cc769f-r4fxb                        1/1     Running     0             70m
+pod/gitlab-kas-986cc769f-rxkc8                        1/1     Running     0             71m
+pod/gitlab-postgresql-0                               2/2     Running     5 (69m ago)   71m
+pod/gitlab-webservice-default-79fbc4dcff-xvsp2        2/2     Running     0             71m
+pod/gitlab-migrations-1-z4cj4                         0/1     Completed   4             71m
+pod/gitlab-webservice-default-79fbc4dcff-nzv5k        2/2     Running     0             70m
+pod/gitlab-sidekiq-all-in-1-v2-57ffffbfdd-nprln       1/1     Running     0             71m
+pod/gitlab-gitlab-runner-69c87b4ff4-7jsm5             1/1     Running     0             5m14s
+
+NAME                                              TYPE           CLUSTER-IP       EXTERNAL-IP   PORT(S)                                   AGE
+service/gitlab-redis-headless                     ClusterIP      None             <none>        6379/TCP                                  71m
+service/gitlab-gitaly                             ClusterIP      None             <none>        8075/TCP,9236/TCP                         71m
+service/gitlab-postgresql-headless                ClusterIP      None             <none>        5432/TCP                                  71m
+service/gitlab-gitlab-shell                       ClusterIP      10.152.183.235   <none>        22/TCP                                    71m
+service/gitlab-gitlab-exporter                    ClusterIP      10.152.183.56    <none>        9168/TCP                                  71m
+service/gitlab-kas                                ClusterIP      10.152.183.28    <none>        8150/TCP,8153/TCP,8154/TCP,8151/TCP       71m
+service/gitlab-registry                           ClusterIP      10.152.183.216   <none>        5000/TCP                                  71m
+service/gitlab-minio-svc                          ClusterIP      10.152.183.117   <none>        9000/TCP                                  71m
+service/gitlab-redis-master                       ClusterIP      10.152.183.244   <none>        6379/TCP                                  71m
+service/gitlab-nginx-ingress-controller-metrics   ClusterIP      10.152.183.50    <none>        10254/TCP                                 71m
+service/gitlab-postgresql                         ClusterIP      10.152.183.111   <none>        5432/TCP                                  71m
+service/gitlab-webservice-default                 ClusterIP      10.152.183.99    <none>        8080/TCP,8181/TCP,8083/TCP                71m
+service/gitlab-redis-metrics                      ClusterIP      10.152.183.145   <none>        9121/TCP                                  71m
+service/gitlab-postgresql-metrics                 ClusterIP      10.152.183.48    <none>        9187/TCP                                  71m
+service/gitlab-nginx-ingress-controller           LoadBalancer   10.152.183.176   192.168.2.1   80:32235/TCP,443:30207/TCP,22:30730/TCP   71m
+
+NAME                                              READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/gitlab-toolbox                    1/1     1            1           71m
+deployment.apps/gitlab-minio                      1/1     1            1           71m
+deployment.apps/gitlab-gitlab-exporter            1/1     1            1           71m
+deployment.apps/gitlab-nginx-ingress-controller   2/2     2            2           71m
+deployment.apps/gitlab-registry                   2/2     2            2           71m
+deployment.apps/gitlab-gitlab-shell               2/2     2            2           71m
+deployment.apps/gitlab-kas                        2/2     2            2           71m
+deployment.apps/gitlab-webservice-default         2/2     2            2           71m
+deployment.apps/gitlab-sidekiq-all-in-1-v2        1/1     1            1           71m
+deployment.apps/gitlab-gitlab-runner              1/1     1            1           71m
+
+NAME                                                        DESIRED   CURRENT   READY   AGE
+replicaset.apps/gitlab-toolbox-844bbbc454                   1         1         1       71m
+replicaset.apps/gitlab-minio-67f5c7dfd8                     1         1         1       71m
+replicaset.apps/gitlab-gitlab-exporter-86f6585df6           1         1         1       71m
+replicaset.apps/gitlab-nginx-ingress-controller-989bd4584   2         2         2       71m
+replicaset.apps/gitlab-registry-5888c7c755                  2         2         2       71m
+replicaset.apps/gitlab-gitlab-shell-6f67cc5b5c              2         2         2       71m
+replicaset.apps/gitlab-kas-986cc769f                        2         2         2       71m
+replicaset.apps/gitlab-webservice-default-79fbc4dcff        2         2         2       71m
+replicaset.apps/gitlab-sidekiq-all-in-1-v2-57ffffbfdd       1         1         1       71m
+replicaset.apps/gitlab-gitlab-runner-f845d89fb              0         0         0       71m
+replicaset.apps/gitlab-gitlab-runner-5f9fd665               0         0         0       59m
+replicaset.apps/gitlab-gitlab-runner-7fbff8d9c              0         0         0       23m
+replicaset.apps/gitlab-gitlab-runner-698686bbf9             0         0         0       13m
+replicaset.apps/gitlab-gitlab-runner-6b8fc79fdf             0         0         0       8m3s
+replicaset.apps/gitlab-gitlab-runner-69c87b4ff4             1         1         1       5m14s
+replicaset.apps/gitlab-gitlab-runner-d659444c               0         0         0       7m22s
+
+NAME                                   READY   AGE
+statefulset.apps/gitlab-gitaly         1/1     71m
+statefulset.apps/gitlab-redis-master   1/1     71m
+statefulset.apps/gitlab-postgresql     1/1     71m
+
+NAME                                                             REFERENCE                               TARGETS          MINPODS   MAXPODS   REPLICAS   AGE
+horizontalpodautoscaler.autoscaling/gitlab-sidekiq-all-in-1-v2   Deployment/gitlab-sidekiq-all-in-1-v2   <unknown>/350m   1         10        1          71m
+horizontalpodautoscaler.autoscaling/gitlab-kas                   Deployment/gitlab-kas                   <unknown>/100m   2         10        2          71m
+horizontalpodautoscaler.autoscaling/gitlab-webservice-default    Deployment/gitlab-webservice-default    <unknown>/1      2         10        2          71m
+horizontalpodautoscaler.autoscaling/gitlab-registry              Deployment/gitlab-registry              <unknown>/75%    2         10        2          71m
+horizontalpodautoscaler.autoscaling/gitlab-gitlab-shell          Deployment/gitlab-gitlab-shell          <unknown>/100m   2         10        2          71m
+
+NAME                                      COMPLETIONS   DURATION   AGE
+job.batch/gitlab-minio-create-buckets-1   1/1           18s        71m
+job.batch/gitlab-migrations-1             1/1           5m5s       71m
+
+NAME                                                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+persistentvolumeclaim/gitlab-minio                       Bound    pvc-227ca0b6-8621-46e0-97d3-d7cfe26449ae   10Gi       RWO            nfs-csi        71m
+persistentvolumeclaim/repo-data-gitlab-gitaly-0          Bound    pvc-57caf9a7-49a2-48e5-98ec-da0af46705a2   50Gi       RWO            nfs-csi        71m
+persistentvolumeclaim/redis-data-gitlab-redis-master-0   Bound    pvc-24fc39a8-d9c6-47c2-9703-6fb0394d3a45   8Gi        RWO            nfs-csi        71m
+persistentvolumeclaim/data-gitlab-postgresql-0           Bound    pvc-e36b2960-18e5-4321-b95c-40af91648052   8Gi        RWO            nfs-csi        71m
+
+NAME                                         TYPE                 DATA   AGE
+secret/gitlab-wildcard-tls                   kubernetes.io/tls    2      71m
+secret/gitlab-wildcard-tls-ca                Opaque               1      71m
+secret/gitlab-wildcard-tls-chain             Opaque               1      71m
+secret/gitlab-gitlab-initial-root-password   Opaque               1      71m
+secret/gitlab-redis-secret                   Opaque               1      71m
+secret/gitlab-postgresql-password            Opaque               2      71m
+secret/gitlab-gitlab-shell-secret            Opaque               1      71m
+secret/gitlab-gitaly-secret                  Opaque               1      71m
+secret/gitlab-minio-secret                   Opaque               2      71m
+secret/gitlab-gitlab-kas-secret              Opaque               1      71m
+secret/gitlab-kas-private-api                Opaque               1      71m
+secret/gitlab-gitlab-suggested-reviewers     Opaque               1      71m
+secret/gitlab-registry-secret                Opaque               2      71m
+secret/gitlab-rails-secret                   Opaque               1      71m
+secret/gitlab-gitlab-shell-host-keys         Opaque               8      71m
+secret/gitlab-gitlab-workhorse-secret        Opaque               1      71m
+secret/gitlab-registry-httpsecret            Opaque               1      71m
+secret/gitlab-registry-notification          Opaque               1      71m
+secret/sh.helm.release.v1.gitlab.v1          helm.sh/release.v1   1      71m
+secret/gitlab-test-cert                      Opaque               1      35m
+secret/gitlab-gitlab-runner-secret           Opaque               3      71m
+
+$ microk8s kubectl -n gitlab logs gitlab-migrations-1-z4cj4 -f
+
+$ microk8s kubectl get secret -n gitlab gitlab-gitlab-initial-root-password -ojsonpath='{.data.password}' | base64 --decode ; echo # grab the login password for the web interface
+PyMXbAuyAeV97epZYmArOEd0WV9EirYK5bCo0hym7sSqn0rxDDgaZCZQHu4PgnBj
+$ microk8s kubectl -n gitlab get service gitlab-nginx-ingress-controller -o jsonpath='{.status.loadBalancer.ingress[*].ip}{"\n"}' # grab the external IP
+$ echo "192.168.2.1 gitlab.test" | sudo tee -a /etc/hosts
+```
+
+1. Visit: https://gitlab.test
+2. Log in with username `root` and password above from secret `gitlab-gitlab-initial-root-password`
+3. Visit https://gitlab.test/admin/runners
+
+#### Create Pipeline
+1. Add you ssh key
+   - Top Right ⮕ Preferences ⮕ SSH Keys
+     - Title: mylaptop
+     - Put output of `cat ~/.ssh/id_rsa.pub` in "Key"
+1. Create new blank project
+   - Project Name: burppipelinetest
+   - Create project
+1. Grab the "clone" URL for example: git@gitlab.test:gitlab-instance-4e1670b6/burppipelinetest.git
+2. `git clone git@gitlab.test:gitlab-instance-4e1670b6/burppipelinetest.git`
+3. `docker run --rm -p 3000:3000 bkimminich/juice-shop`
+4. Visit "CI/CD" ⮕ Editor, then choose "Configure Pipeline"
+5. Add the following jobs and click "commit"
+```yaml
+stages:
+  - test  
+
+burpscan:
+    stage: test
+    variables:      
+      GIT_SSL_NO_VERIFY: "true"
+    script:
+      - apt update
+      - apt install -y curl
+      - curl 10.0.0.15:3000
+```
+6. Go to CI/CD ⮕ Pipelines, and click on the current pipeline ⮕ burpscan
+⮕

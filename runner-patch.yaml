@@ -1,0 +1,12 @@
+- op: add
+  path: "/spec/template/spec/volumes"
+  value:
+  - name: gitlab-test-cert2
+    secret:
+      secretName: gitlab-test-cert
+- op: add
+  path: "/spec/template/spec/containers/0/volumeMounts"
+  value:
+  - mountPath: "/home/gitlab-runner/certs"
+  - name: gitlab-test-cert2
+
