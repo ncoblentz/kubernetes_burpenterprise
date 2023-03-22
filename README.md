@@ -12,7 +12,7 @@
     - [GitLab](#gitlab)
       - [Address a problem with cert-manager](#address-a-problem-with-cert-manager)
       - [Install](#install-1)
-      - [Create Pipeline](#create-pipeline)
+      - [Create a Test Pipeline to Confirm Connectivity/Certificates/Trust](#create-a-test-pipeline-to-confirm-connectivitycertificatestrust)
 
 
 # Local Microk8s Burp Enterprise Kubernetes PoC 
@@ -546,25 +546,18 @@ $ sudo chmod 777 -R /srv/nfs/ && sudo chown -R :microk8s /srv/nfs # I shouldn't 
 $ microk8s kubectl -n gitlab patch deployments gitlab-gitlab-runner -p '{"spec":{"template":{"spec":{"hostAliases":[{"ip":"192.168.2.1","hostnames":["gitlab.test"]}]}}}}'
 $ openssl s_client -showcerts -connect gitlab.test:443 -servername gitlab.test < /dev/null 2>/dev/null | openssl x509 -outform PEM > gitlab.test.crt
 $ microk8s kubectl -n gitlab create secret generic gitlab-test-cert --from-file=gitlab.test.crt 
-$ microk8s kubectl -n gitlab2 edit deployments.apps gitlab-gitlab-runner 
-# Add:
-volumes:
-- name: gitlab-test-cert
-  secret:
-    secretName: gitlab-test-cert
-#And
-volumeMounts:
-- name: gitlab-test-cert
-  mountPath: /home/gitlab-runner/certs
-$ microk8s kubectl -n gitlab2 edit configmaps gitlab-gitlab-runner 
-#in config.template.toml, Add:   [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n similar to:
-[[runners]]\n  [runners.kubernetes]\n  image = \"ubuntu:18.04\"\n\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n\n  [runners.cache]\n    Type = \"s3\"\n    Path = \"gitlab-runner\"\n    Shared = true\n    [runners.cache.s3]\n      ServerAddress = \"minio.test\"\n      BucketName = \"runner-cache\"\n      BucketLocation = \"us-east-1\"\n      Insecure = false      
- 
-$ #These were initially needed because I didn't make nfs-csi storageclass the default storageclass
-$ #microk8s kubectl -n gitlab patch pvc data-gitlab-postgresql-0 -p '{"spec":{"storageClassName":"nfs-csi"}}'
-$ #microk8s kubectl -n gitlab patch pvc repo-data-gitlab-gitaly-0 -p '{"spec":{"storageClassName":"nfs-csi"}}'
-$ #microk8s kubectl -n gitlab patch pvc redis-data-gitlab-redis-master-0 -p '{"spec":{"storageClassName":"nfs-csi"}}'
-$ #This could take a while, here are the commands I used to watch its progress and check on things
+$ microk8s kubectl -n gitlab patch deployments gitlab-gitlab-runner --type JSON --patch-file runner-patch.yaml
+$ microk8s kubectl -n gitlab edit configmaps gitlab-gitlab-runner 
+```
+In `config.template.toml`, Add:   
+```
+[[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n similar to:
+[[runners]]\n  [runners.kubernetes]\n  image = \"ubuntu:18.04\"\n\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n  [[runners.kubernetes.host_aliases]]\n    ip = \"192.168.2.1\"\n    hostnames = [\"gitlab.test\"]\n\n  [runners.cache]\n    Type = \"s3\"\n    Path = \"gitlab-runner\"\n    Shared = true\n    [runners.cache.s3]\n      ServerAddress = \"minio.test\"\n      BucketName = \"runner-cache\"\n      BucketLocation = \"us-east-1\"\n      Insecure = false 
+```
+You may have to restart the pods for the runner if they picked up the configmap previously. Use the `kubectl scale ... replicas=0` then `replicas=1` commands if needed
+
+Check progress of the deployments using:
+```bash
 $ microk8s kubectl -n gitlab get all,pvc,certificates,secrets
 NAME                                                  READY   STATUS      RESTARTS      AGE
 pod/gitlab-toolbox-844bbbc454-tsggx                   1/1     Running     0             71m
@@ -679,20 +672,32 @@ secret/gitlab-registry-notification          Opaque               1      71m
 secret/sh.helm.release.v1.gitlab.v1          helm.sh/release.v1   1      71m
 secret/gitlab-test-cert                      Opaque               1      35m
 secret/gitlab-gitlab-runner-secret           Opaque               3      71m
+```
+The migrations take a while, use this command to see the progress:
 
+```bash
 $ microk8s kubectl -n gitlab logs gitlab-migrations-1-z4cj4 -f
+```
 
-$ microk8s kubectl get secret -n gitlab gitlab-gitlab-initial-root-password -ojsonpath='{.data.password}' | base64 --decode ; echo # grab the login password for the web interface
+Grab the password for the user `root` to log in to the web interface:
+
+```bash
+$ microk8s kubectl get secret -n gitlab gitlab-gitlab-initial-root-password -ojsonpath='{.data.password}' | base64 --decode ; echo
 PyMXbAuyAeV97epZYmArOEd0WV9EirYK5bCo0hym7sSqn0rxDDgaZCZQHu4PgnBj
+```
+
+Get the external IP address to connect to and create a host entry:
+
+```bash
 $ microk8s kubectl -n gitlab get service gitlab-nginx-ingress-controller -o jsonpath='{.status.loadBalancer.ingress[*].ip}{"\n"}' # grab the external IP
 $ echo "192.168.2.1 gitlab.test" | sudo tee -a /etc/hosts
 ```
 
-1. Visit: https://gitlab.test
-2. Log in with username `root` and password above from secret `gitlab-gitlab-initial-root-password`
-3. Visit https://gitlab.test/admin/runners
+Visit: https://gitlab.test
+- Log in with username `root` and password above from secret `gitlab-gitlab-initial-root-password`
+- Visit https://gitlab.test/admin/runners
 
-#### Create Pipeline
+#### Create a Test Pipeline to Confirm Connectivity/Certificates/Trust
 1. Add you ssh key
    - Top Right ⮕ Preferences ⮕ SSH Keys
      - Title: mylaptop
@@ -716,7 +721,10 @@ burpscan:
     script:
       - apt update
       - apt install -y curl
-      - curl 10.0.0.15:3000
+      - curl 10.0.0.15:3000 #IP of my host machine running the juice-shop docker image
 ```
-6. Go to CI/CD ⮕ Pipelines, and click on the current pipeline ⮕ burpscan
+6. Go to CI/CD ⮕ Pipelines, and click on the current pipeline ⮕ burpscan, and review the output
+
+
+
 ⮕
